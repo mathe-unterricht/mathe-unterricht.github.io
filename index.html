@@ -194,6 +194,13 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
 #colorSeg button { display: flex; align-items: center; justify-content: center; gap: 6px; }
 .stage:fullscreen { height: 100vh; border-radius: 0; border: 0; }
 .padnote { margin: 0; font-size: 12px; color: var(--muted); }
+.opick { display: grid; gap: 5px; width: min(100%, 168px); }
+.opick button {
+  aspect-ratio: 1; border-radius: 9px; border: 1px solid var(--line); background: var(--bg);
+  color: var(--frame-ink); font: 800 13px/1 var(--font-body); cursor: pointer; padding: 0;
+}
+.opick button:hover { border-color: var(--frame); }
+.opick button[aria-pressed="true"] { background: var(--frame); border-color: var(--frame); }
 
 .pts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .pts li { display: flex; align-items: center; gap: 10px; }
@@ -301,8 +308,19 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
         <div class="group">
           <span class="label">Zählung</span>
           <div class="seg" id="offSeg">
-            <button type="button" id="off1" data-off="1" aria-pressed="true">Ab 1<small>Ursprung vor der Ecke</small></button>
-            <button type="button" id="off0" data-off="0" aria-pressed="false">Ab 0<small>Ursprung = Eckkugel</small></button>
+            <button type="button" id="off1" data-off="1" aria-pressed="true">Ab 1<small id="off1Note">Ursprung vor der Ecke</small></button>
+            <button type="button" id="off0" data-off="0" aria-pressed="false">Ab 0<small id="off0Note">Ursprung = Eckkugel</small></button>
+          </div>
+        </div>
+        <div class="group">
+          <span class="label">Ursprung</span>
+          <div class="seg" id="originSeg">
+            <button type="button" id="originCorner" data-origin="ecke" aria-pressed="true">An der Ecke</button>
+            <button type="button" id="originRod" data-origin="stab" aria-pressed="false">Anderer Stab</button>
+          </div>
+          <div id="originWrap" class="group" hidden>
+            <div class="opick" id="opick"></div>
+            <p class="padnote">Draufsicht wie unten: Stab antippen, durch den die <em>x</em>₃-Achse laufen soll.</p>
           </div>
         </div>
       </div>
@@ -342,6 +360,7 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
   let current = 1, starter = 1, winner = 0, winLine = null, draw = false;
   let mode = "ai", diff = 2, aiBusy = false, aiTimer = 0;
   let showAxes = false, off = 1, revealed = false;
+  let originRC = null, lastRC = [0, 0]; // null = Ursprung an der Ecke, sonst [Zeile, Spalte] des Ursprungsstabs
   let score = { 1: 0, 2: 0, 3: 0 };
   let showVec = false;
   const PNAME = { 1: "Weiß", 2: "Schwarz", 3: "Braun" };
@@ -382,12 +401,18 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
     return null;
   }
 
-  // Mathematische Koordinaten (rechtshändig): x nach vorn, y nach rechts, z nach oben
-  function coordsOf(cell) {
-    const level = Math.floor(cell / SZ), c = cell % SZ;
-    return [Math.floor(c / B) + off, (c % B) + off, level + off];
+  // Mathematische Koordinaten (rechtshändig): x₁ nach vorn, x₂ nach rechts, x₃ nach oben
+  // Lage des Ursprungs in Brett-Indizes (Zeile, Spalte, Ebene)
+  function originIdx() {
+    return originRC ? [originRC[0], originRC[1], -off] : [-off, -off, -off];
   }
-  const fmtPoint = p => "(" + p.join(" | ") + ")";
+  function coordsOf(cell) {
+    const level = Math.floor(cell / SZ), c = cell % SZ, o = originIdx();
+    return [Math.floor(c / B) - o[0], (c % B) - o[1], level - o[2]];
+  }
+  const num = n => n < 0 ? "−" + (-n) : String(n);
+  const fmtPoint = p => "(" + p.map(num).join(" | ") + ")";
+  const AXN = ["x" + SUBS[1], "x" + SUBS[2], "x" + SUBS[3]];
 
   /* ---------- Computer (Negamax mit Alpha-Beta) ---------- */
   function evaluate(p) {
@@ -481,12 +506,13 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
   const levelY = z => R + 0.02 + z * UNIT;
   const baseSize = () => (B - 1) * UNIT + 1.2;
   const poleH = () => levelY(B - 1) + R + 0.2;
-  // Weltposition eines mathematischen Punkts (x|y|z)
+  // Weltposition eines mathematischen Punkts (x₁|x₂|x₃)
   function worldOf(x, y, z) {
+    const o = originIdx();
     return new THREE.Vector3(
-      (y - off - (B - 1) / 2) * UNIT,
-      levelY(z - off),
-      (x - off - (B - 1) / 2) * UNIT
+      (y + o[1] - (B - 1) / 2) * UNIT,
+      levelY(z + o[2]),
+      (x + o[0] - (B - 1) / 2) * UNIT
     );
   }
 
@@ -662,19 +688,22 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
     const col = tok("--axis");
     const color = new THREE.Color(col);
     const O = worldOf(0, 0, 0);
-    const maxV = B - 1 + off;          // größter vorkommender Koordinatenwert
-    const len = (maxV + 1.1);           // in Einheiten
+    const o = originIdx();
     const axes = [
-      { name: "x", dir: new THREE.Vector3(0, 0, 1), lab: new THREE.Vector3(-0.32, -0.12, 0) },
-      { name: "y", dir: new THREE.Vector3(1, 0, 0), lab: new THREE.Vector3(0, -0.12, -0.32) },
-      { name: "z", dir: new THREE.Vector3(0, 1, 0), lab: new THREE.Vector3(-0.3, 0, -0.3) }
+      { name: AXN[0], dir: new THREE.Vector3(0, 0, 1), lab: new THREE.Vector3(-0.32, -0.12, 0) },
+      { name: AXN[1], dir: new THREE.Vector3(1, 0, 0), lab: new THREE.Vector3(0, -0.12, -0.32) },
+      { name: AXN[2], dir: new THREE.Vector3(0, 1, 0), lab: new THREE.Vector3(-0.3, 0, -0.3) }
     ];
-    for (const a of axes) {
-      const end = O.clone().addScaledVector(a.dir, len * UNIT);
-      axesGroup.add(overlayArrow(O, end, color, 0.3));
-      for (let k = 1; k <= maxV; k++) {
+    axes.forEach((a, i) => {
+      // kleinster und größter vorkommender Koordinatenwert (der Ursprung liegt immer auf der Achse)
+      const lo = Math.min(0, -o[i]), hi = Math.max(0, B - 1 - o[i]);
+      const begin = O.clone().addScaledVector(a.dir, (lo < 0 ? lo - 0.6 : 0) * UNIT);
+      const end = O.clone().addScaledVector(a.dir, (hi + 1.1) * UNIT);
+      axesGroup.add(overlayArrow(begin, end, color, 0.3));
+      for (let k = lo; k <= hi; k++) {
+        if (k === 0) continue;
         const p = O.clone().addScaledVector(a.dir, k * UNIT);
-        const tick = makeLabel(String(k), { color: col, size: 0.3 });
+        const tick = makeLabel(num(k), { color: col, size: 0.3 });
         tick.position.copy(p).add(a.lab);
         axesGroup.add(tick);
         // kleiner Strich
@@ -688,10 +717,10 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
       const nm = makeLabel(a.name, { color: col, size: 0.46, italic: true });
       nm.position.copy(end).addScaledVector(a.dir, 0.32);
       axesGroup.add(nm);
-    }
-    const o = makeLabel("O", { color: col, size: 0.32 });
-    o.position.copy(O).add(new THREE.Vector3(-0.28, -0.2, -0.28));
-    axesGroup.add(o);
+    });
+    const oLab = makeLabel("O", { color: col, size: 0.32 });
+    oLab.position.copy(O).add(new THREE.Vector3(-0.28, -0.2, -0.28));
+    axesGroup.add(oLab);
     scene.add(axesGroup);
   }
 
@@ -799,12 +828,10 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
       ghost.position.set(colX(c), levelY(heights[c]), colZ(c));
       ghost.material.color.set(tok(COLTOK[current]));
       ghost.visible = true;
-      if (showAxes) hint.innerHTML = "Nächste Kugel landet bei <b>" + fmtPoint(coordsOf(c + heights[c] * SZ)) + "</b>";
-      else hint.textContent = HINT_DEFAULT;
     } else {
       ghost.visible = false;
-      hint.textContent = HINT_DEFAULT;
     }
+    hint.textContent = HINT_DEFAULT;
   }
 
   const ZMIN = 5, ZMAX = 20;
@@ -896,6 +923,25 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
     }
   }
 
+  /* ---------- Ursprung-Auswahl ---------- */
+  const opick = document.getElementById("opick");
+  let opickBtns = [];
+  function buildOriginPicker() {
+    opick.innerHTML = "";
+    opick.style.gridTemplateColumns = "repeat(" + B + ", minmax(0, 1fr))";
+    opickBtns = [];
+    for (let c = 0; c < SZ; c++) {
+      const b = document.createElement("button");
+      b.type = "button";
+      const r = Math.floor(c / B), s = c % B;
+      b.setAttribute("aria-label", "Ursprung auf Stab in Zeile " + (r + 1) + ", Spalte " + (s + 1));
+      b.addEventListener("click", () => { originRC = lastRC = [r, s]; originChanged(); });
+      opick.appendChild(b);
+      opickBtns[c] = b;
+    }
+  }
+  function originChanged() { buildAxes(); buildReveal(); save(); updateUI(); }
+
   /* ---------- Ablauf ---------- */
   const pill = document.getElementById("pill");
   const pillText = document.getElementById("pillText");
@@ -921,7 +967,7 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
     ).join("");
     const v = [0, 1, 2].map(i => pts[1][i] - pts[0][i]);
     document.getElementById("vec").innerHTML =
-      '<span class="mvar">v</span>&#8407; = <span class="col">' + v.map(n => "<span>" + n + "</span>").join("") + "</span>";
+      '<span class="mvar">v</span>&#8407; = <span class="col">' + v.map(n => "<span>" + num(n) + "</span>").join("") + "</span>";
   }
 
   function updateUI() {
@@ -953,16 +999,25 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
       }
       b.disabled = heights[c] >= B || !canPlay();
       const xy = coordsOf(c);
-      b.setAttribute("aria-label", "Stab bei x = " + xy[0] + ", y = " + xy[1] + ", " + heights[c] + " von " + B + " belegt");
+      b.setAttribute("aria-label", "Stab bei " + AXN[0] + " = " + num(xy[0]) + ", " + AXN[1] + " = " + num(xy[1]) + ", " + heights[c] + " von " + B + " belegt");
     }
+    const o = originIdx();
     padAxisLabels.forEach(l => {
       if (!showAxes) { l.el.innerHTML = ""; return; }
-      if (l.kind === "corner") l.el.innerHTML = "<em>x</em>\\<em>y</em>";
-      else l.el.textContent = String(l.i + off);
+      if (l.kind === "corner") l.el.innerHTML = "<em>x</em>" + SUBS[1] + "\\<em>x</em>" + SUBS[2];
+      else l.el.textContent = num(l.i - o[l.kind === "x" ? 0 : 1]);
     });
     document.getElementById("padnote").textContent = showAxes
-      ? "Zeilen: x · Spalten: y · Punkte im Feld: z, von unten nach oben."
+      ? "Zeilen: " + AXN[0] + " · Spalten: " + AXN[1] + " · Punkte im Feld: " + AXN[2] + ", von unten nach oben."
       : "Jedes Feld zeigt einen Stab von unten nach oben.";
+    document.getElementById("off1Note").textContent = originRC ? "Ursprung unter dem Stab" : "Ursprung vor der Ecke";
+    document.getElementById("off0Note").textContent = originRC ? "Ursprung = unterste Kugel" : "Ursprung = Eckkugel";
+    document.getElementById("originWrap").hidden = !originRC;
+    opickBtns.forEach((b, c) => {
+      const on = !!originRC && originRC[0] === Math.floor(c / B) && originRC[1] === c % B;
+      b.setAttribute("aria-pressed", String(on));
+      b.textContent = on ? "O" : "";
+    });
     undoBtn.disabled = !moves.length || aiBusy || (mode === "ai" && starter === 2 && moves.length === 1);
     const names = mode === "ai" ? { 1: "Du", 2: "Computer" } : PNAME;
     let sh = "";
@@ -979,6 +1034,7 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
     press("#diffSeg button", b => +b.dataset.diff === diff);
     press("#axesSeg button", b => (b.dataset.axes === "1") === showAxes);
     press("#offSeg button", b => +b.dataset.off === off);
+    press("#originSeg button", b => (b.dataset.origin === "stab") === !!originRC);
     updateWinCard();
     if (hoverCol >= 0) setHover(hoverCol);
   }
@@ -1061,8 +1117,11 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
     disposeGroup(revealGroup); revealGroup = null;
     clearBeads();
     setupLogic(v);
+    const clampRC = rc => rc && [Math.min(rc[0], B - 1), Math.min(rc[1], B - 1)];
+    originRC = clampRC(originRC); lastRC = clampRC(lastRC);
     buildBoard();
     buildPad();
+    buildOriginPicker();
     buildAxes();
     beads = new Array(CELLS).fill(null);
   }
@@ -1108,11 +1167,15 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
     showAxes = b.dataset.axes === "1"; buildAxes(); save(); updateUI();
   }));
   document.querySelectorAll("#offSeg button").forEach(b => b.addEventListener("click", () => {
-    off = +b.dataset.off; buildAxes(); buildReveal(); save(); updateUI();
+    off = +b.dataset.off; originChanged();
+  }));
+  document.querySelectorAll("#originSeg button").forEach(b => b.addEventListener("click", () => {
+    originRC = b.dataset.origin === "stab" ? lastRC : null; originChanged();
   }));
 
+  const validRC = rc => Array.isArray(rc) && rc.length === 2 && rc.every(n => Number.isInteger(n) && n >= 0 && n < 4);
   function save() {
-    try { localStorage.setItem("vg3d", JSON.stringify({ variant, mode, diff, score, showAxes, off })); } catch (e) {}
+    try { localStorage.setItem("vg3d", JSON.stringify({ variant, mode, diff, score, showAxes, off, originRC, lastRC })); } catch (e) {}
   }
   function load() {
     try {
@@ -1123,6 +1186,8 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
         if (s.score) score = Object.assign({ 1: 0, 2: 0, 3: 0 }, s.score);
         showAxes = !!s.showAxes;
         off = s.off === 0 ? 0 : 1;
+        originRC = validRC(s.originRC) ? s.originRC : null;
+        if (validRC(s.lastRC)) lastRC = s.lastRC;
         if (VARIANTS[s.variant]) return s.variant;
       }
     } catch (e) {}
@@ -1162,6 +1227,7 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
     if (data && VARIANTS[data.variant]) v = data.variant;
     if (data && typeof data.showAxes === "boolean") showAxes = data.showAxes;
     if (data && (data.off === 0 || data.off === 1)) off = data.off;
+    if (data && (data.originRC === null || validRC(data.originRC))) originRC = data.originRC;
     setVariant(v);
     if (data && Array.isArray(data.moves)) {
       if (data.mode) mode = data.mode;
@@ -1180,7 +1246,7 @@ button:focus-visible { outline: 3px solid var(--frame); outline-offset: 2px; }
     maybeAi();
     requestAnimationFrame(tick);
   }
-  window.claude?.hot?.snapshot?.(() => ({ variant, moves: moves.slice(), mode, diff, starter, cam: { ...cam }, score, showAxes, off, revealed }));
+  window.claude?.hot?.snapshot?.(() => ({ variant, moves: moves.slice(), mode, diff, starter, cam: { ...cam }, score, showAxes, off, originRC, revealed }));
   window.claude?.hot?.ready ? window.claude.hot.ready(start) : start(window.claude?.hot?.data ?? {});
 })();
 </script>
